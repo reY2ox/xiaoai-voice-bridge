@@ -1,0 +1,507 @@
+name: Bundle / Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: Create GitHub release after all checks pass
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BUNDLE_ARTIFACT_NAME: openclaw-plugin-xiaoai-cloud-bundle
+
+concurrency:
+  group: bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify publishable package
+        run: npm pack --dry-run
+
+      - name: Verify source install helpers
+        run: |
+          set -eu
+
+          sh -n installers/install.sh
+          sh -n installers/uninstall.sh
+          sh installers/install.sh --help >/dev/null
+          sh installers/uninstall.sh --help >/dev/null
+          node scripts/configure-openclaw-install.mjs --help >/dev/null
+          node scripts/configure-openclaw-uninstall.mjs --help >/dev/null
+          node --check scripts/xiaomi-login-cli.mjs
+          node --check scripts/probe-xiaomi-status.mjs
+          node tests/configure-install-contract.mjs
+          node tests/install-overwrite-contract.mjs
+
+  verify-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify publishable package
+        run: npm pack --dry-run
+
+      - name: Verify source Windows install helper
+        shell: cmd
+        run: |
+          call installers\install.cmd --help >NUL
+          call installers\uninstall.cmd --help >NUL
+          node scripts\configure-openclaw-install.mjs --help >NUL
+          node scripts\configure-openclaw-uninstall.mjs --help >NUL
+          node --check scripts\xiaomi-login-cli.mjs
+          node tests\configure-install-contract.mjs
+          node tests\install-overwrite-contract.mjs
+
+  bundle:
+    runs-on: ubuntu-latest
+    needs:
+      - verify-linux
+      - verify-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Create bundle
+        run: |
+          set -eu
+
+          bundle_root="release-bundle/openclaw-plugin-xiaoai-cloud"
+          pack_work_dir="release-bundle/npm-pack"
+
+          rm -rf release-bundle
+          rm -f openclaw-plugin-xiaoai-cloud-bundle.zip release-assets.sha256
+
+          mkdir -p "$pack_work_dir"
+
+          npm pack --json > release-bundle/npm-pack.json
+          package_tgz=$(node -e "const fs = require('fs'); const pack = JSON.parse(fs.readFileSync('release-bundle/npm-pack.json', 'utf8')); const entries = Array.isArray(pack) ? pack : Object.values(pack); const entry = entries.find((item) => item && typeof item.filename === 'string'); if (!entry) throw new Error('npm pack did not report an output filename'); console.log(entry.filename);")
+          tar -xzf "$package_tgz" -C "$pack_work_dir"
+          mv "$pack_work_dir/package" "$bundle_root"
+          rm -f "$package_tgz"
+
+          test -f "$bundle_root/package.json"
+          test -f "$bundle_root/openclaw.plugin.json"
+          test -f "$bundle_root/README.md"
+          test -f "$bundle_root/LICENSE"
+          test -f "$bundle_root/dist/index.js"
+          test -f "$bundle_root/dist/src/provider.js"
+          test -f "$bundle_root/installers/install.sh"
+          test -f "$bundle_root/installers/install.cmd"
+          test -f "$bundle_root/installers/uninstall.sh"
+          test -f "$bundle_root/installers/uninstall.cmd"
+          test -f "$bundle_root/scripts/xiaomi-login-cli.mjs"
+          test -f "$bundle_root/scripts/publish-clawhub-package.mjs"
+          test ! -e "$bundle_root/PROJECT_ANALYSIS.md"
+          test ! -e "$bundle_root/CROSS_CLAW_ADAPTATION_PLAN.md"
+          test ! -e "$bundle_root/docs"
+          test ! -e "$bundle_root/tests"
+
+          # The repository keeps installers under installers/, while the extracted
+          # release has always exposed them at its root. Publish the same layout the
+          # previous releases used so existing instructions keep working.
+          cp "$bundle_root/installers/install.sh" "$bundle_root/install.sh"
+          cp "$bundle_root/installers/install.cmd" "$bundle_root/install.cmd"
+          cp "$bundle_root/installers/uninstall.sh" "$bundle_root/uninstall.sh"
+          cp "$bundle_root/installers/uninstall.cmd" "$bundle_root/uninstall.cmd"
+          rm -rf "$bundle_root/installers"
+
+          test -f "$bundle_root/install.sh"
+          test -f "$bundle_root/install.cmd"
+          test -f "$bundle_root/uninstall.sh"
+          test -f "$bundle_root/uninstall.cmd"
+          chmod +x "$bundle_root/install.sh"
+          chmod +x "$bundle_root/uninstall.sh"
+
+          # install.sh / install.cmd are also shipped as standalone release assets.
+          cp "$bundle_root/install.sh" install.sh
+          cp "$bundle_root/install.cmd" install.cmd
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          source_dir = pathlib.Path("release-bundle/openclaw-plugin-xiaoai-cloud")
+          output = pathlib.Path("openclaw-plugin-xiaoai-cloud-bundle.zip")
+
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for path in sorted(source_dir.rglob("*")):
+                  if path.is_file():
+                      zf.write(path, path.relative_to(source_dir))
+          PY
+
+          sha256sum \
+            openclaw-plugin-xiaoai-cloud-bundle.zip \
+            install.sh \
+            install.cmd \
+            > release-assets.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
+          path: |
+            openclaw-plugin-xiaoai-cloud-bundle.zip
+            install.sh
+            install.cmd
+            release-assets.sha256
+          if-no-files-found: error
+
+  smoke-test-bundle-linux:
+    runs-on: ubuntu-latest
+    needs: bundle
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Download workflow artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
+          path: .
+
+      - name: Extract and verify bundle contents
+        run: |
+          set -eu
+
+          rm -rf smoke-test
+          mkdir -p smoke-test/zip
+
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          output_dir = pathlib.Path("smoke-test/zip")
+          with zipfile.ZipFile("openclaw-plugin-xiaoai-cloud-bundle.zip") as zf:
+              zf.extractall(output_dir)
+          PY
+
+          root="smoke-test/zip"
+          test -f "$root/install.sh"
+          test -f "$root/install.cmd"
+          test -f "$root/uninstall.sh"
+          test -f "$root/uninstall.cmd"
+          test -f "$root/openclaw.plugin.json"
+          test -f "$root/package.json"
+          test -f "$root/README.md"
+          test -f "$root/LICENSE"
+          test -f "$root/dist/index.js"
+          test -f "$root/dist/src/provider.js"
+          test -f "$root/assets/ui/xiaoai-console.css"
+          test -f "$root/assets/ui/xiaoai-console.js"
+          test -f "$root/assets/ui/xiaoai-auth-portal.js"
+          test -f "$root/assets/ui/favicon.svg"
+          test -f "$root/assets/fonts/manrope/wght.css"
+          test -f "$root/assets/fonts/noto-sans-sc/wght.css"
+          test -f "$root/scripts/configure-openclaw-install.mjs"
+          test -f "$root/scripts/configure-openclaw-uninstall.mjs"
+          test -f "$root/scripts/xiaomi-login-cli.mjs"
+          test -f "$root/scripts/publish-clawhub-package.mjs"
+          test -f "$root/scripts/probe-xiaomi-status.mjs"
+          test ! -e "$root/openclaw-plugin-xiaoai-cloud/package.json"
+          test ! -e "$root/PROJECT_ANALYSIS.md"
+          test ! -e "$root/CROSS_CLAW_ADAPTATION_PLAN.md"
+          test ! -e "$root/docs"
+          test ! -e "$root/tests"
+          test ! -e "$root/installers"
+
+          node - "$root" <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+
+          const root = process.argv[2];
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+          const plugin = JSON.parse(fs.readFileSync(path.join(root, "openclaw.plugin.json"), "utf8"));
+
+          if (pkg.name !== "openclaw-plugin-xiaoai-cloud") {
+            throw new Error(`Unexpected package name: ${pkg.name}`);
+          }
+          if (plugin.id !== pkg.name) {
+            throw new Error(`Plugin id ${plugin.id} does not match package name ${pkg.name}`);
+          }
+          const openclaw = pkg.openclaw || {};
+          const extensions = Array.isArray(openclaw.extensions) ? openclaw.extensions : [];
+          const runtimeExtensions = Array.isArray(openclaw.runtimeExtensions)
+            ? openclaw.runtimeExtensions
+            : [];
+          if (extensions.length === 0) {
+            throw new Error("Missing package.json openclaw.extensions");
+          }
+          if (runtimeExtensions.length > 0 && runtimeExtensions.length !== extensions.length) {
+            throw new Error(
+              `package.json openclaw.runtimeExtensions length (${runtimeExtensions.length}) must match openclaw.extensions length (${extensions.length})`
+            );
+          }
+          const entriesToCheck = runtimeExtensions.length > 0 ? runtimeExtensions : extensions;
+          for (const extension of entriesToCheck) {
+            if (!fs.existsSync(path.join(root, extension))) {
+              throw new Error(`Missing OpenClaw runtime extension file: ${extension}`);
+            }
+          }
+          if (!pkg.openclaw.compat || !pkg.openclaw.build) {
+            throw new Error("Missing OpenClaw ClawHub compatibility metadata");
+          }
+          NODE
+
+      - name: Smoke test extracted Linux helpers
+        run: |
+          set -eu
+
+          root="$PWD/smoke-test/zip"
+          sh -n "$root/install.sh"
+          sh -n "$root/uninstall.sh"
+          sh "$root/install.sh" --help >/dev/null
+          sh "$root/uninstall.sh" --help >/dev/null
+          node "$root/scripts/configure-openclaw-install.mjs" --help >/dev/null
+          node "$root/scripts/configure-openclaw-uninstall.mjs" --help >/dev/null
+          node --check "$root/scripts/xiaomi-login-cli.mjs"
+          node --check "$root/scripts/publish-clawhub-package.mjs"
+          node --check "$root/scripts/probe-xiaomi-status.mjs"
+
+          cat > "$PWD/fake-openclaw-old" <<'EOF'
+          #!/usr/bin/env sh
+          if [ "${1:-}" = "--version" ]; then
+            echo "OpenClaw 2026.3.23 (smoke-test)"
+            exit 0
+          fi
+          echo "unsupported fake openclaw invocation: $*" >&2
+          exit 1
+          EOF
+          chmod +x "$PWD/fake-openclaw-old"
+
+          if sh "$root/install.sh" --skip-npm-install --openclaw-bin "$PWD/fake-openclaw-old" > "$PWD/linux-old-version.log" 2>&1; then
+            echo "Expected install.sh to reject an old OpenClaw version" >&2
+            exit 1
+          fi
+
+          grep -q "requires OpenClaw 2026.03.24 or newer" "$PWD/linux-old-version.log"
+
+  smoke-test-bundle-windows:
+    runs-on: windows-latest
+    needs: bundle
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Download workflow artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
+          path: .
+
+      - name: Extract and verify bundle contents
+        shell: powershell
+        run: |
+          Remove-Item -Recurse -Force smoke-test -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path smoke-test\zip | Out-Null
+          Expand-Archive -LiteralPath openclaw-plugin-xiaoai-cloud-bundle.zip -DestinationPath smoke-test\zip -Force
+
+          $root = "smoke-test\zip"
+          @(
+            "$root\install.sh",
+            "$root\install.cmd",
+            "$root\uninstall.sh",
+            "$root\uninstall.cmd",
+            "$root\openclaw.plugin.json",
+            "$root\package.json",
+            "$root\README.md",
+            "$root\LICENSE",
+            "$root\dist\index.js",
+            "$root\dist\src\provider.js",
+            "$root\assets\ui\xiaoai-console.css",
+            "$root\assets\ui\xiaoai-console.js",
+            "$root\assets\ui\favicon.svg",
+            "$root\assets\fonts\manrope\wght.css",
+            "$root\assets\fonts\noto-sans-sc\wght.css",
+            "$root\scripts\configure-openclaw-install.mjs",
+            "$root\scripts\configure-openclaw-uninstall.mjs",
+            "$root\scripts\xiaomi-login-cli.mjs",
+            "$root\scripts\publish-clawhub-package.mjs",
+            "$root\scripts\probe-xiaomi-status.mjs"
+          ) | ForEach-Object {
+            if (-not (Test-Path $_)) {
+              throw "Missing expected bundle file: $_"
+            }
+          }
+
+          @(
+            "$root\openclaw-plugin-xiaoai-cloud\package.json",
+            "$root\PROJECT_ANALYSIS.md",
+            "$root\CROSS_CLAW_ADAPTATION_PLAN.md",
+            "$root\docs",
+            "$root\tests",
+            "$root\installers"
+          ) | ForEach-Object {
+            if (Test-Path $_) {
+              throw "Unexpected file found in bundle: $_"
+            }
+          }
+
+          node -e "const fs = require('node:fs'); const path = require('node:path'); const root = process.argv[1]; const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); const plugin = JSON.parse(fs.readFileSync(path.join(root, 'openclaw.plugin.json'), 'utf8')); if (pkg.name !== 'openclaw-plugin-xiaoai-cloud') throw new Error('Unexpected package name: ' + pkg.name); if (plugin.id !== pkg.name) throw new Error('Plugin id mismatch'); const openclaw = pkg.openclaw || {}; const extensions = Array.isArray(openclaw.extensions) ? openclaw.extensions : []; const runtimeExtensions = Array.isArray(openclaw.runtimeExtensions) ? openclaw.runtimeExtensions : []; if (extensions.length === 0) throw new Error('Missing openclaw.extensions'); if (runtimeExtensions.length > 0 && runtimeExtensions.length !== extensions.length) throw new Error('runtimeExtensions length must match extensions length'); const entriesToCheck = runtimeExtensions.length > 0 ? runtimeExtensions : extensions; for (const extension of entriesToCheck) { if (!fs.existsSync(path.resolve(root, extension))) throw new Error('Missing OpenClaw runtime extension file: ' + extension); } if (!openclaw.compat || !openclaw.build) throw new Error('Missing OpenClaw ClawHub compatibility metadata');" "$root"
+
+      - name: Smoke test extracted Windows helpers
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD "smoke-test\zip"
+
+          cmd /d /c "call ""$root\install.cmd"" --help >NUL"
+          if ($LASTEXITCODE -ne 0) { throw "install.cmd --help failed with exit code $LASTEXITCODE" }
+
+          cmd /d /c "call ""$root\uninstall.cmd"" --help >NUL"
+          if ($LASTEXITCODE -ne 0) { throw "uninstall.cmd --help failed with exit code $LASTEXITCODE" }
+
+          node "$root\scripts\configure-openclaw-install.mjs" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "configure-openclaw-install.mjs --help failed with exit code $LASTEXITCODE" }
+
+          node "$root\scripts\configure-openclaw-uninstall.mjs" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "configure-openclaw-uninstall.mjs --help failed with exit code $LASTEXITCODE" }
+
+          node --check "$root\scripts\xiaomi-login-cli.mjs" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "xiaomi-login-cli.mjs --check failed with exit code $LASTEXITCODE" }
+
+          node --check "$root\scripts\publish-clawhub-package.mjs" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "publish-clawhub-package.mjs --check failed with exit code $LASTEXITCODE" }
+
+          $fake = Join-Path $PWD "fake-openclaw-old.cmd"
+          $fakeLines = @(
+            '@echo off'
+            'if "%~1"=="--version" ('
+            '  echo OpenClaw 2026.3.23 ^(smoke-test^)'
+            '  exit /b 0'
+            ')'
+            'echo unsupported fake openclaw invocation: %* 1>&2'
+            'exit /b 1'
+          )
+          [System.IO.File]::WriteAllText($fake, (($fakeLines -join "`r`n") + "`r`n"), [System.Text.Encoding]::ASCII)
+
+          $fakeVersion = cmd /d /c "call ""$fake"" --version"
+          if ($LASTEXITCODE -ne 0) { throw "fake-openclaw-old.cmd --version failed with exit code $LASTEXITCODE" }
+          if (($fakeVersion -join "`n") -notmatch "OpenClaw 2026\.3\.23") {
+            throw "Unexpected fake-openclaw-old.cmd version output: $($fakeVersion -join ' | ')"
+          }
+
+          $log = Join-Path $PWD "windows-old-version.log"
+          cmd /d /c "call ""$root\install.cmd"" --skip-npm-install --openclaw-bin ""$fake"" > ""$log"" 2>&1"
+          $installExitCode = $LASTEXITCODE
+          if ($installExitCode -lt 1) {
+            if (Test-Path $log) {
+              Get-Content $log
+            }
+            throw "Expected install.cmd to reject an old OpenClaw version"
+          }
+
+          $logContent = if (Test-Path $log) { Get-Content $log -Raw } else { "" }
+          if ($logContent -notmatch "(requires OpenClaw 2026\.03\.24 or newer|is too old)") {
+            Write-Host $logContent
+            throw "Expected old-version rejection message was not found in windows-old-version.log"
+          }
+
+          $global:LASTEXITCODE = 0
+          exit 0
+
+  create-release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+    needs:
+      - smoke-test-bundle-linux
+      - smoke-test-bundle-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Download workflow artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
+          path: .
+
+      - name: Generate release metadata
+        id: meta
+        run: |
+          set -eu
+
+          stamp=$(date -u +"%Y%m%d-%H%M%S")
+          tag="${stamp}"
+          title="${stamp}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_TITLE: ${{ steps.meta.outputs.title }}
+        run: |
+          : > empty-release-notes.md
+
+          gh release create "$RELEASE_TAG" \
+            openclaw-plugin-xiaoai-cloud-bundle.zip \
+            install.sh \
+            install.cmd \
+            release-assets.sha256 \
+            --title "$RELEASE_TITLE" \
+            --notes-file empty-release-notes.md \
+            --target "$GITHUB_SHA"

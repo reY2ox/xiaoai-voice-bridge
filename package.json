@@ -1,0 +1,87 @@
+{
+  "name": "openclaw-plugin-xiaoai-cloud",
+  "version": "1.0.0",
+  "description": "Direct Xiaomi cloud integration for OpenClaw XiaoAi speaker control",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "main": "dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZhengXieGang/Xiaoai-Claw-Addon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZhengXieGang/Xiaoai-Claw-Addon/issues"
+  },
+  "homepage": "https://github.com/ZhengXieGang/Xiaoai-Claw-Addon#readme",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "clawhub",
+    "xiaoai",
+    "xiaomi",
+    "speaker",
+    "voice"
+  ],
+  "files": [
+    "dist",
+    "assets/ui/favicon.svg",
+    "assets/ui/xiaoai-auth-portal.js",
+    "assets/ui/xiaoai-console.css",
+    "assets/ui/xiaoai-console.js",
+    "assets/fonts/manrope/files/*.woff2",
+    "assets/fonts/manrope/wght.css",
+    "assets/fonts/manrope/LICENSE",
+    "assets/fonts/noto-sans-sc/files/*.woff2",
+    "assets/fonts/noto-sans-sc/wght.css",
+    "assets/fonts/noto-sans-sc/LICENSE",
+    "scripts/configure-openclaw-install.mjs",
+    "scripts/configure-openclaw-uninstall.mjs",
+    "scripts/xiaomi-login-cli.mjs",
+    "scripts/publish-clawhub-package.mjs",
+    "scripts/probe-xiaomi-status.mjs",
+    "openclaw.plugin.json",
+    "README.md",
+    "installers/install.sh",
+    "installers/install.cmd",
+    "installers/uninstall.sh",
+    "installers/uninstall.cmd"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.4.1",
+      "pluginSdkVersion": "2026.3.24-beta.2"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test:install": "node tests/install-overwrite-contract.mjs",
+    "login:cli": "npm run build && node scripts/xiaomi-login-cli.mjs",
+    "prepack": "npm run build",
+    "pack:dry-run": "npm pack --dry-run",
+    "clawhub:publish": "node scripts/publish-clawhub-package.mjs ."
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
+  },
+  "dependencies": {
+    "json5": "^2.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}

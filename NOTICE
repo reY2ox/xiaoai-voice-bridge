@@ -1,0 +1,25 @@
+xiaoai-voice-bridge
+===================
+
+This project is a fork of:
+
+    Xiaoai-Claw-Addon
+    https://github.com/ZhengXieGang/Xiaoai-Claw-Addon
+    Copyright (C) ZhengXieGang
+    Licensed under the GNU Affero General Public License v3.0 or later
+
+Modifications in this fork (2026-11-18):
+
+  1. Replace the retired 2020 Mi Home iOS User-Agent with a currently
+     supported Android one, fixing "-127 client withdraw" on every
+     api.io.mi.com request.
+  2. Treat -127 / "client withdraw" as an auth failure so the client
+     re-logs in and retries instead of giving up.
+  3. Honour the server-provided wait_second before retrying after -127.
+  4. Only run the python micoapi helper when a xiaomiio session already
+     exists, so it cannot kick the freshly obtained token.
+  5. Add a fallback login path: complete xiaomiio login to obtain a
+     passToken, then exchange it for a micoapi token.
+
+All modifications are released under the same AGPL-3.0-or-later license.
+The full license text is in LICENSE.
